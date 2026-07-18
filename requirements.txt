@@ -3,4 +3,4 @@ pandas
 plotly
 jugaad-data
 python-docx
-kaleido
+kaleido==0.1.0.post1
