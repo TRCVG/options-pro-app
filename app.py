@@ -22,7 +22,7 @@ st.markdown("<div id='top'></div>", unsafe_allow_html=True)
 # TOP SWITCH DISPLAY (TOGGLE BETWEEN MODES)
 # ==========================================
 st.markdown("### 🎛️ Terminal Workspace Switcher")
-is_batch_mode = st.toggle("⚡ Enable Multi-Task Batch Terminal (No Charts)", value=True)
+is_batch_mode = st.toggle("⚡ Enable Multi-Task Batch Terminal (No Charts)", value=False)
 
 st.markdown("---")
 
