@@ -888,44 +888,31 @@ else:
                 )
 
             with dl_col2:
-                try:
-                    with st.spinner("Generating Microsoft Word Document..."):
-                        doc = Document()
-                        doc.add_heading(f'Options Strategy Executive Report - {today}', 0)
-                        doc.add_paragraph("This report contains the automated backtest results and historical premium charts for the configured options portfolio.")
+            try:
+                with st.spinner("Generating Microsoft Word Document..."):
+                    doc = Document()
+                    doc.add_heading(f'Options Strategy Executive Report - {today}', 0)
+                    doc.add_paragraph("This report contains the automated backtest results.")
 
-                        img1_bytes = fig_price.to_image(format="png", width=900, height=500, scale=1.5)
-                        img1b_bytes = fig_growth_bar.to_image(format="png", width=900, height=350, scale=1.5)
-                        img2_bytes = fig_pnl_individual.to_image(format="png", width=900, height=500, scale=1.5)
-                        img3_bytes = fig_portfolio.to_image(format="png", width=900, height=500, scale=1.5)
+                    # This is what fails on Streamlit Cloud because of Chrome/Kaleido missing:
+                    img1_bytes = fig_price.to_image(format="png", width=900, height=500, scale=1.5)
+                    
+                    doc.add_heading('1a. Multi-Series Premium Price Chart', level=1)
+                    doc.add_picture(io.BytesIO(img1_bytes), width=Inches(6.5))
 
-                        doc.add_heading('1a. Multi-Series Premium Price Chart', level=1)
-                        doc.add_picture(io.BytesIO(img1_bytes), width=Inches(6.5))
-                        
-                        doc.add_heading('1b. Premium Growth Breakdown', level=1)
-                        doc.add_picture(io.BytesIO(img1b_bytes), width=Inches(6.5))
-                        
-                        doc.add_page_break()
-
-                        doc.add_heading('2. Individual Strategy Profit & Loss (P&L)', level=1)
-                        doc.add_picture(io.BytesIO(img2_bytes), width=Inches(6.5))
-
-                        doc.add_heading('3. Net Portfolio Profit & Loss Range', level=1)
-                        doc.add_picture(io.BytesIO(img3_bytes), width=Inches(6.5))
-
-                        doc_buffer = io.BytesIO()
-                        doc.save(doc_buffer)
-                        doc_bytes = doc_buffer.getvalue()
-                        
-                        st.download_button(
-                            label="📝 Download as Microsoft Word (.docx)",
-                            data=doc_bytes,
-                            file_name=f"Options_Article_Draft_{today}.docx",
-                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                            use_container_width=True
-                        )
-                except ValueError as e:
-                    st.error("⚠️ To download Word docs, run `py -m pip install kaleido` in your terminal, and restart.")
+                    doc_buffer = io.BytesIO()
+                    doc.save(doc_buffer)
+                    doc_bytes = doc_buffer.getvalue()
+                    
+                    st.download_button(
+                        label="📝 Download as Microsoft Word (.docx)",
+                        data=doc_bytes,
+                        file_name=f"Options_Article_Draft_{today}.docx",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        use_container_width=True
+                    )
+            except Exception as e:
+                st.info("💡 Word document image export is currently unavailable on cloud hosting because system browser binaries (Chromium) are missing. You can still use the CSV Data Ledger download safely!")
                 
         else:
             st.error("Could not find data matches for any of the configured options. Check your dates.")
