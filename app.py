@@ -9,6 +9,7 @@ import io
 import copy
 from docx import Document
 from docx.shared import Inches
+from google import genai
 
 # ==========================================
 # PAGE CONFIGURATION
@@ -49,6 +50,638 @@ if is_batch_mode:
         }]
         st.session_state.batch_next_task_id = 1
 
+   # ==========================================
+    # TOOL 1: 🤖 AI Automated ATM Strangle / Straddle Generator (Manual Ref)
+    # ==========================================
+    with st.expander("🛠️ Tool 1: AI Automated ATM Straddle Generator (Manual Ref)", expanded=True):
+        st.markdown("Generates base ATM or OTM Strangle/Straddle tasks with an offset range.")
+        
+        ai_col1, ai_col2, ai_col3 = st.columns(3)
+        with ai_col1:
+            ai_symbol = st.selectbox("Index Symbol", ["NIFTY", "BANKNIFTY", "FINNIFTY"], key="ai_sym")
+            ai_lot_size = st.number_input("Lot Size", value=1, min_value=1, key="ai_lot")
+        with ai_col2:
+            ai_from_dt = st.date_input("Entry Date", value=datetime.date.today() - datetime.timedelta(days=10), key="ai_from")
+            ai_expiry_dt = st.date_input("Expiry Date", value=datetime.date.today(), key="ai_exp")
+        with ai_col3:
+            ai_base_atm = st.number_input("Base ATM Strike Reference", value=24000, step=50, key="ai_atm")
+            # --- NEW: Max OTM Offset Range Option ---
+            ai_otm_offset = st.number_input("Max OTM Offset Range (Points)", value=0, step=50, min_value=0, key="ai_offset", help="Adds point offsets to create a Strangle (e.g., 100 or 200 points away from ATM)")
+
+        if st.button("🚀 Auto-Build ATM/Strangle Task", type="primary"):
+            step_size = 100 if ai_symbol == "BANKNIFTY" else 50
+            ce_strike = int(ai_base_atm + ai_otm_offset)
+            pe_strike = int(ai_base_atm - ai_otm_offset)
+            
+            # If offset is 0, it acts as a Straddle on the exact ATM strike. If offset > 0, it creates a Strangle.
+            series_list = []
+            
+            if ai_otm_offset == 0:
+                series_list = [
+                    {
+                        "series_id": 0,
+                        "symbol": ai_symbol,
+                        "option_type": "CE",
+                        "strikes": str(ce_strike),
+                        "expiry": ai_expiry_dt,
+                        "from_dt": ai_from_dt,
+                        "to_dt": ai_expiry_dt,
+                        "lot_size": ai_lot_size,
+                        "action": "Sell (Short)"
+                    },
+                    {
+                        "series_id": 1,
+                        "symbol": ai_symbol,
+                        "option_type": "PE",
+                        "strikes": str(pe_strike),
+                        "expiry": ai_expiry_dt,
+                        "from_dt": ai_from_dt,
+                        "to_dt": ai_expiry_dt,
+                        "lot_size": ai_lot_size,
+                        "action": "Sell (Short)"
+                    }
+                ]
+            else:
+                # OTM Strangle with offset range
+                series_list = [
+                    {
+                        "series_id": 0,
+                        "symbol": ai_symbol,
+                        "option_type": "CE",
+                        "strikes": str(ce_strike),
+                        "expiry": ai_expiry_dt,
+                        "from_dt": ai_from_dt,
+                        "to_dt": ai_expiry_dt,
+                        "lot_size": ai_lot_size,
+                        "action": "Sell (Short)"
+                    },
+                    {
+                        "series_id": 1,
+                        "symbol": ai_symbol,
+                        "option_type": "PE",
+                        "strikes": str(pe_strike),
+                        "expiry": ai_expiry_dt,
+                        "from_dt": ai_from_dt,
+                        "to_dt": ai_expiry_dt,
+                        "lot_size": ai_lot_size,
+                        "action": "Sell (Short)"
+                    }
+                ]
+
+            new_tasks = [{
+                "id": 0,
+                "minimized": True,
+                "series": series_list
+            }]
+            
+            st.session_state.batch_tasks = new_tasks
+            st.session_state.batch_next_task_id = len(new_tasks)
+            st.success("Successfully auto-generated task via Tool 1 with OTM offset range!")
+            st.rerun()
+  # ==========================================
+    # TOOL 2: 🛠️ Yearly Monthly ATM Planner (Flexible Entry Modes)
+    # ==========================================
+    with st.expander("🛠️ Tool 2: Yearly Monthly ATM Planner (Automated yfinance Schedule)", expanded=False):
+        st.markdown("Generate monthly ATM schedules dynamically. Choose between first trading day entry or continuous expiry-to-expiry rollover.")
+        
+        gem_col1, gem_col2 = st.columns(2)
+        with gem_col1:
+            target_year = st.number_input("Select Target Year", min_value=2015, max_value=2035, value=2026, step=1, key="gem_target_yr")
+            gemini_symbol = st.selectbox("Index Symbol", ["NIFTY", "BANKNIFTY"], key="gem_sym")
+            entry_mode = st.selectbox("Entry Mode", ["First Trading Day of Month", "Expiry-to-Expiry Rollover"], key="gem_entry_mode")
+        with gem_col2:
+            gemini_lot = st.number_input("Lot Size", value=1, min_value=1, key="gem_lot")
+
+        if st.button("✨ Fetch Yearly ATM Schedule", type="primary"):
+            try:
+                import datetime
+                import calendar
+                import yfinance as yf
+                import pandas as pd
+
+                with st.spinner(f"Fetching verified market data for {int(target_year)}..."):
+                    yf_ticker = "^NSEBANK" if gemini_symbol.upper() == "BANKNIFTY" else "^NSEI"
+                    step_val = 100 if gemini_symbol.upper() == "BANKNIFTY" else 50
+
+                    # Fetch data for target year and December of previous year (needed for Jan expiry-to-expiry start)
+                    df = yf.download(
+                        yf_ticker,
+                        start=f"{int(target_year)-1}-12-01",
+                        end=f"{int(target_year)}-12-31",
+                        interval="1d",
+                        progress=False
+                    )
+
+                    if isinstance(df.columns, pd.MultiIndex):
+                        df.columns = df.columns.get_level_values(0)
+
+                    # Helper function to compute expiry for any given month/year
+                    def get_monthly_expiry(y, m):
+                        last_day = calendar.monthrange(y, m)[1]
+                        last_date_obj = datetime.date(y, m, last_day)
+                        transition_date = datetime.date(2025, 9, 1)
+                        # Post-Sept 2025 uses Tuesday, prior uses Thursday
+                        target_day_rule = calendar.TUESDAY if last_date_obj >= transition_date else calendar.THURSDAY
+                        
+                        offset = (last_date_obj.weekday() - target_day_rule) % 7
+                        expiry = last_date_obj - datetime.timedelta(days=offset)
+                        
+                        # Adjust if market holiday / ensure it's in dataframe if needed, else fallback
+                        return expiry
+
+                    generated_tasks = []
+                    today = datetime.date.today()
+                    months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
+
+                    # Pre-calculate expiries for the year + previous December
+                    all_expiries = {}
+                    for m in range(1, 13):
+                        all_expiries[(target_year, m)] = get_monthly_expiry(target_year, m)
+                    all_expiries[(target_year - 1, 12)] = get_monthly_expiry(target_year - 1, 12)
+
+                    for idx, month_name in enumerate(months):
+                        m_num = idx + 1
+                        
+                        # Determine Entry and Expiry based on Mode
+                        if entry_mode == "First Trading Day of Month":
+                            month_df = df[(df.index.month == m_num) & (df.index.year == int(target_year))]
+                            if month_df.empty:
+                                continue
+                            entry_timestamp = month_df.index[0]
+                            m_entry = entry_timestamp.date()
+                            m_expiry = all_expiries[(target_year, m_num)]
+                        else:
+                            # Expiry-to-Expiry Mode
+                            # Jan entry is Dec expiry of prev year; Feb entry is Jan expiry, etc.
+                            if m_num == 1:
+                                prev_expiry = all_expiries[(target_year - 1, 12)]
+                            else:
+                                prev_expiry = all_expiries[(target_year, m_num - 1)]
+                            
+                            m_entry = prev_expiry
+                            m_expiry = all_expiries[(target_year, m_num)]
+                            
+                            # Get dataframe slice for the specific entry date to grab open price
+                            entry_timestamp = pd.Timestamp(m_entry)
+
+                        # Fetch Open Price on Entry Date
+                        rounded_atm = 24000  # Fallback default
+                        if m_entry <= today:
+                            # Find closest available trading day if exact entry date was a holiday/weekend
+                            available_days = df[df.index >= pd.Timestamp(m_entry)]
+                            if not available_days.empty:
+                                actual_entry_ts = available_days.index[0]
+                                val = df.loc[actual_entry_ts, "Open"]
+                                open_price = float(val) if not pd.isna(val) else None
+                                if open_price is not None:
+                                    rounded_atm = int(round(open_price / step_val) * step_val)
+
+                        generated_tasks.append({
+                            "id": idx,
+                            "minimized": True,
+                            "series": [
+                                {
+                                    "series_id": 0,
+                                    "symbol": gemini_symbol,
+                                    "option_type": "CE",
+                                    "strikes": str(rounded_atm),
+                                    "expiry": m_expiry,
+                                    "from_dt": m_entry,
+                                    "to_dt": m_expiry,
+                                    "lot_size": gemini_lot,
+                                    "action": "Sell (Short)"
+                                },
+                                {
+                                    "series_id": 1,
+                                    "symbol": gemini_symbol,
+                                    "option_type": "PE",
+                                    "strikes": str(rounded_atm),
+                                    "expiry": m_expiry,
+                                    "from_dt": m_entry,
+                                    "to_dt": m_expiry,
+                                    "lot_size": gemini_lot,
+                                    "action": "Sell (Short)"
+                                }
+                            ]
+                        })
+
+                    st.session_state.batch_tasks = generated_tasks
+                    st.session_state.batch_next_task_id = len(generated_tasks)
+                    st.success(f"Successfully generated {len(generated_tasks)} tasks using **{entry_mode}** for {int(target_year)}!")
+                    st.rerun()
+
+            except Exception as e:
+
+                st.error(f"Failed to fetch market data: {e}. Ensure `yfinance` and `pandas` are installed.")
+
+# ==========================================
+    # TOOL 3: 🛠️ Weekly Expiry ATM & OTM Strangle Planner
+    # ==========================================
+    with st.expander("🛠️ Tool 3: Weekly Expiry ATM & OTM Strangle Planner", expanded=False):
+        st.markdown("Generates weekly expiry schedules with entry starting the day after the previous expiry.")
+        
+        t3_col1, t3_col2 = st.columns(2)
+        with t3_col1:
+            t3_target_year = st.number_input("Select Target Year", min_value=2015, max_value=2035, value=2026, step=1, key="t3_target_yr")
+            t3_symbol = st.selectbox("Index Symbol", ["NIFTY", "BANKNIFTY", "FINNIFTY"], key="t3_sym")
+            t3_selection_type = st.radio("Strike Selection Type", ["Pure ATM (Offset = 0)", "OTM Offset Range"], horizontal=True, key="t3_sel_type")
+        with t3_col2:
+            t3_lot = st.number_input("Lot Size", value=1, min_value=1, key="t3_lot")
+            t3_offset = st.number_input("OTM Offset (Points)", value=100, step=50, min_value=0, key="t3_offset", help="Points away from ATM for CE and PE legs if OTM Offset Range is chosen.")
+
+        if st.button("✨ Generate Weekly Expiry Schedule", type="primary"):
+            try:
+                import datetime
+                import calendar
+                import yfinance as yf
+                import pandas as pd
+
+                with st.spinner(f"Fetching weekly schedule and pricing data for {int(t3_target_year)}..."):
+                    yf_ticker = "^NSEBANK" if t3_symbol.upper() == "BANKNIFTY" else ("^NSEI" if t3_symbol.upper() == "NIFTY" else "^CNXFIN")
+                    step_val = 100 if t3_symbol.upper() == "BANKNIFTY" else 50
+
+                    # Fetch data including previous December to handle the first week's previous expiry entry rule
+                    df = yf.download(
+                        yf_ticker,
+                        start=f"{int(t3_target_year)-1}-12-01",
+                        end=f"{int(t3_target_year)}-12-31",
+                        interval="1d",
+                        progress=False
+                    )
+
+                    if isinstance(df.columns, pd.MultiIndex):
+                        df.columns = df.columns.get_level_values(0)
+
+                    if df.empty:
+                        st.error("Could not fetch historical data for this ticker/year.")
+                    else:
+                        df['date'] = df.index
+                        transition_date = pd.Timestamp("2025-09-01")
+                        
+                        trading_days = df.index.tolist()
+                        expiry_candidates = []
+                        for d in trading_days:
+                            is_post = d >= transition_date
+                            target_wd = 1 if is_post else 3  # Tuesday (1) or Thursday (3)
+                            if d.weekday() == target_wd:
+                                expiry_candidates.append(d)
+
+                        from collections import defaultdict
+                        week_map = defaultdict(list)
+                        for d in expiry_candidates:
+                            week_map[d.isocalendar()[:2]].append(d)
+                        
+                        all_valid_expiries = sorted([sorted(days)[-1] for days in week_map.values()])
+                        
+                        # Filter expiries that belong to target year or late prev year for initial entry mapping
+                        weekly_tasks = []
+                        offset_val = t3_offset if t3_selection_type == "OTM Offset Range" else 0
+
+                        # Find index of the first expiry of the target year
+                        target_year_expiries = [e for e in all_valid_expiries if e.year == int(t3_target_year)]
+                        
+                        for idx, exp_ts in enumerate(target_year_expiries):
+                            exp_date = exp_ts.date()
+                            
+                            # ENTRY RULE: Day after previous expiry
+                            # Find the expiry that occurred right before this one in our full list
+                            exp_idx_in_all = all_valid_expiries.index(exp_ts)
+                            if exp_idx_in_all > 0:
+                                prev_exp_ts = all_valid_expiries[exp_idx_in_all - 1]
+                                ideal_entry_ts = prev_exp_ts + pd.Timedelta(days=1)
+                            else:
+                                # Fallback for the very first week of the year
+                                ideal_entry_ts = exp_ts - pd.Timedelta(days=6)
+
+                            # Locate the actual next valid trading day on or after ideal entry date
+                            valid_entries = [d for d in trading_days if d >= ideal_entry_ts and d <= exp_ts]
+                            if not valid_entries:
+                                continue
+                            actual_entry_ts = valid_entries[0]
+                            entry_date = actual_entry_ts.date()
+
+                            # Fetch Open price on actual entry date for ATM baseline calculation
+                            open_val = df.loc[actual_entry_ts, "Open"]
+                            baseline_open = float(open_val) if not pd.isna(open_val) else 24000
+                            
+                            atm_strike = int(round(baseline_open / step_val) * step_val)
+                            
+                            ce_strike = atm_strike + offset_val
+                            pe_strike = atm_strike - offset_val
+
+                            weekly_tasks.append({
+                                "id": idx,
+                                "minimized": True,
+                                "series": [
+                                    {
+                                        "series_id": 0,
+                                        "symbol": t3_symbol,
+                                        "option_type": "CE",
+                                        "strikes": str(ce_strike),
+                                        "expiry": exp_date,
+                                        "from_dt": entry_date,
+                                        "to_dt": exp_date,
+                                        "lot_size": t3_lot,
+                                        "action": "Sell (Short)"
+                                    },
+                                    {
+                                        "series_id": 1,
+                                        "symbol": t3_symbol,
+                                        "option_type": "PE",
+                                        "strikes": str(pe_strike),
+                                        "expiry": exp_date,
+                                        "from_dt": entry_date,
+                                        "to_dt": exp_date,
+                                        "lot_size": t3_lot,
+                                        "action": "Sell (Short)"
+                                    }
+                                ]
+                            })
+
+                        if weekly_tasks:
+                            st.session_state.batch_tasks = weekly_tasks
+                            st.session_state.batch_next_task_id = len(weekly_tasks)
+                            st.success(f"Successfully generated {len(weekly_tasks)} weekly expiry tasks with roll-over entry rules for {t3_symbol} ({int(t3_target_year)})!")
+                            st.rerun()
+                        else:
+                            st.warning("No weekly expiry tasks could be built for the selected range.")
+
+            except Exception as e:
+                st.error(f"Failed to generate weekly schedule: {e}")
+
+                # ==========================================
+    # TOOL 4: 🛠️ Automated Weekly Iron Condor Generator
+    # ==========================================
+    with st.expander("🛠️ Tool 4: Automated Weekly Iron Condor Generator", expanded=False):
+        st.markdown("Generates weekly defined-risk Iron Condor schedules (Short Strangle + Long Protection Wings) for the entire year.")
+        
+        t4_col1, t4_col2 = st.columns(2)
+        with t4_col1:
+            t4_target_year = st.number_input("Select Target Year", min_value=2015, max_value=2035, value=2026, step=1, key="t4_target_yr")
+            t4_symbol = st.selectbox("Index Symbol", ["NIFTY", "BANKNIFTY", "FINNIFTY"], key="t4_sym")
+            t4_otm_offset = st.number_input("Short Strangle Offset from ATM (Points)", value=100, step=50, min_value=0, key="t4_offset", help="Points away from ATM for the short CE and PE legs.")
+        with t4_col2:
+            t4_lot = st.number_input("Lot Size", value=1, min_value=1, key="t4_lot")
+            t4_wing_spread = st.number_input("Wing Spread Distance (Points)", value=300, step=50, min_value=50, key="t4_wing", help="Distance outward from short strikes to place long wing protection.")
+
+        if st.button("✨ Generate Weekly Iron Condor Schedule", type="primary"):
+            try:
+                import datetime
+                import calendar
+                import yfinance as yf
+                import pandas as pd
+
+                with st.spinner(f"Building weekly Iron Condor schedule for {int(t4_target_year)}..."):
+                    yf_ticker = "^NSEBANK" if t4_symbol.upper() == "BANKNIFTY" else ("^NSEI" if t4_symbol.upper() == "NIFTY" else "^CNXFIN")
+                    step_val = 100 if t4_symbol.upper() == "BANKNIFTY" else 50
+
+                    df = yf.download(
+                        yf_ticker,
+                        start=f"{int(t4_target_year)-1}-12-01",
+                        end=f"{int(t4_target_year)}-12-31",
+                        interval="1d",
+                        progress=False
+                    )
+
+                    if isinstance(df.columns, pd.MultiIndex):
+                        df.columns = df.columns.get_level_values(0)
+
+                    if df.empty:
+                        st.error("Could not fetch historical data for this ticker/year.")
+                    else:
+                        df['date'] = df.index
+                        transition_date = pd.Timestamp("2025-09-01")
+                        
+                        trading_days = df.index.tolist()
+                        expiry_candidates = []
+                        for d in trading_days:
+                            is_post = d >= transition_date
+                            target_wd = 1 if is_post else 3  # Tuesday (1) or Thursday (3)
+                            if d.weekday() == target_wd:
+                                expiry_candidates.append(d)
+
+                        from collections import defaultdict
+                        week_map = defaultdict(list)
+                        for d in expiry_candidates:
+                            week_map[d.isocalendar()[:2]].append(d)
+                        
+                        all_valid_expiries = sorted([sorted(days)[-1] for days in week_map.values()])
+                        target_year_expiries = [e for e in all_valid_expiries if e.year == int(t4_target_year)]
+                        
+                        condor_tasks = []
+                        wing_dist = int(t4_wing_spread)
+                        offset_val = int(t4_otm_offset)
+
+                        for idx, exp_ts in enumerate(target_year_expiries):
+                            exp_date = exp_ts.date()
+                            
+                            # Entry rule: Day after previous expiry
+                            exp_idx_in_all = all_valid_expiries.index(exp_ts)
+                            if exp_idx_in_all > 0:
+                                prev_exp_ts = all_valid_expiries[exp_idx_in_all - 1]
+                                ideal_entry_ts = prev_exp_ts + pd.Timedelta(days=1)
+                            else:
+                                ideal_entry_ts = exp_ts - pd.Timedelta(days=6)
+
+                            valid_entries = [d for d in trading_days if d >= ideal_entry_ts and d <= exp_ts]
+                            if not valid_entries:
+                                continue
+                            actual_entry_ts = valid_entries[0]
+                            entry_date = actual_entry_ts.date()
+
+                            open_val = df.loc[actual_entry_ts, "Open"]
+                            baseline_open = float(open_val) if not pd.isna(open_val) else 24000
+                            
+                            atm_strike = int(round(baseline_open / step_val) * step_val)
+                            
+                            # Iron Condor Strikes Layout
+                            short_ce = atm_strike + offset_val
+                            short_pe = atm_strike - offset_val
+                            long_ce = short_ce + wing_dist
+                            long_pe = short_pe - wing_dist
+
+                            condor_tasks.append({
+                                "id": idx,
+                                "minimized": True,
+                                "series": [
+                                    # Short Strangle Core Legs
+                                    {
+                                        "series_id": 0, "symbol": t4_symbol, "option_type": "CE",
+                                        "strikes": str(short_ce), "expiry": exp_date, "from_dt": entry_date,
+                                        "to_dt": exp_date, "lot_size": t4_lot, "action": "Sell (Short)"
+                                    },
+                                    {
+                                        "series_id": 1, "symbol": t4_symbol, "option_type": "PE",
+                                        "strikes": str(short_pe), "expiry": exp_date, "from_dt": entry_date,
+                                        "to_dt": exp_date, "lot_size": t4_lot, "action": "Sell (Short)"
+                                    },
+                                    # Long Wing Protection Legs
+                                    {
+                                        "series_id": 2, "symbol": t4_symbol, "option_type": "CE",
+                                        "strikes": str(long_ce), "expiry": exp_date, "from_dt": entry_date,
+                                        "to_dt": exp_date, "lot_size": t4_lot, "action": "Buy (Long)"
+                                    },
+                                    {
+                                        "series_id": 3, "symbol": t4_symbol, "option_type": "PE",
+                                        "strikes": str(long_pe), "expiry": exp_date, "from_dt": entry_date,
+                                        "to_dt": exp_date, "lot_size": t4_lot, "action": "Buy (Long)"
+                                    }
+                                ]
+                            })
+
+                        if condor_tasks:
+                            st.session_state.batch_tasks = condor_tasks
+                            st.session_state.batch_next_task_id = len(condor_tasks)
+                            st.success(f"Successfully generated {len(condor_tasks)} weekly Iron Condor tasks for {t4_symbol} ({int(t4_target_year)})!")
+                            st.rerun()
+                        else:
+                            st.warning("No weekly Iron Condor tasks could be built for the selected range.")
+
+            except Exception as e:
+                st.error(f"Failed to generate weekly Iron Condor schedule: {e}")
+
+   # ==========================================
+    # TOOL 5: 🛠️ Automated Monthly Iron Condor Generator
+    # ==========================================
+    with st.expander("🛠️ Tool 5: Automated Monthly Iron Condor Generator", expanded=False):
+        st.markdown("Generates monthly defined-risk Iron Condor schedules with flexible entry modes for the entire year.")
+        
+        t5_col1, t5_col2 = st.columns(2)
+        with t5_col1:
+            t5_target_year = st.number_input("Select Target Year", min_value=2015, max_value=2035, value=2026, step=1, key="t5_target_yr")
+            t5_symbol = st.selectbox("Index Symbol", ["NIFTY", "BANKNIFTY"], key="t5_sym")
+            t5_entry_mode = st.selectbox("Entry Mode", ["First Trading Day of Month", "Expiry-to-Expiry Rollover"], key="t5_entry_mode")
+        with t5_col2:
+            t5_lot = st.number_input("Lot Size", value=1, min_value=1, key="t5_lot")
+            t5_otm_offset = st.number_input("Short Strangle Offset (Points)", value=150, step=50, min_value=0, key="t5_offset", help="Points away from ATM for short legs.")
+            t5_wing_spread = st.number_input("Wing Spread Distance (Points)", value=400, step=50, min_value=50, key="t5_wing", help="Distance outward for long wing protection.")
+
+        if st.button("✨ Generate Monthly Iron Condor Schedule", type="primary"):
+            try:
+                import datetime
+                import calendar
+                import yfinance as yf
+                import pandas as pd
+
+                with st.spinner(f"Building monthly Iron Condor schedule using {t5_entry_mode} for {int(t5_target_year)}..."):
+                    yf_ticker = "^NSEBANK" if t5_symbol.upper() == "BANKNIFTY" else "^NSEI"
+                    step_val = 100 if t5_symbol.upper() == "BANKNIFTY" else 50
+
+                    # Fetch data for target year and previous December (needed for Jan expiry rollover start)
+                    df = yf.download(
+                        yf_ticker,
+                        start=f"{int(t5_target_year)-1}-12-01",
+                        end=f"{int(t5_target_year)}-12-31",
+                        interval="1d",
+                        progress=False
+                    )
+
+                    if isinstance(df.columns, pd.MultiIndex):
+                        df.columns = df.columns.get_level_values(0)
+
+                    if df.empty:
+                        st.error("Could not fetch historical data for this ticker/year.")
+                    else:
+                        def get_monthly_expiry(y, m):
+                            last_day = calendar.monthrange(y, m)[1]
+                            last_date_obj = datetime.date(y, m, last_day)
+                            transition_date = datetime.date(2025, 9, 1)
+                            target_day_rule = calendar.TUESDAY if last_date_obj >= transition_date else calendar.THURSDAY
+                            offset = (last_date_obj.weekday() - target_day_rule) % 7
+                            return last_date_obj - datetime.timedelta(days=offset)
+
+                        # Pre-calculate expiries for target year + previous December
+                        all_expiries = {}
+                        for m in range(1, 13):
+                            all_expiries[(int(t5_target_year), m)] = get_monthly_expiry(int(t5_target_year), m)
+                        all_expiries[(int(t5_target_year) - 1, 12)] = get_monthly_expiry(int(t5_target_year) - 1, 12)
+
+                        monthly_condor_tasks = []
+                        wing_dist = int(t5_wing_spread)
+                        offset_val = int(t5_otm_offset)
+                        months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
+                        trading_days = df.index.tolist()
+
+                        for idx, month_name in enumerate(months):
+                            m_num = idx + 1
+                            m_expiry = all_expiries[(int(t5_target_year), m_num)]
+
+                            # Determine entry date based on selected mode
+                            if t5_entry_mode == "First Trading Day of Month":
+                                month_df = df[(df.index.month == m_num) & (df.index.year == int(t5_target_year))]
+                                if month_df.empty:
+                                    continue
+                                entry_timestamp = month_df.index[0]
+                                entry_date = entry_timestamp.date()
+                            else:
+                                # Expiry-to-Expiry Rollover Mode
+                                if m_num == 1:
+                                    entry_date = all_expiries[(int(t5_target_year) - 1, 12)]
+                                else:
+                                    entry_date = all_expiries[(int(t5_target_year), m_num - 1)]
+                                entry_timestamp = pd.Timestamp(entry_date)
+
+                            # Fetch open price on entry date (handling holidays/weekends if rollover lands on non-trading day)
+                            baseline_open = 24000
+                            available_days = [d for d in trading_days if d >= entry_timestamp]
+                            if available_days:
+                                actual_entry_ts = available_days[0]
+                                open_val = df.loc[actual_entry_ts, "Open"]
+                                if not pd.isna(open_val):
+                                    baseline_open = float(open_val)
+                                    entry_date = actual_entry_ts.date()
+
+                            atm_strike = int(round(baseline_open / step_val) * step_val)
+
+                            # Iron Condor Strikes Layout
+                            short_ce = atm_strike + offset_val
+                            short_pe = atm_strike - offset_val
+                            long_ce = short_ce + wing_dist
+                            long_pe = short_pe - wing_dist
+
+                            monthly_condor_tasks.append({
+                                "id": idx,
+                                "minimized": True,
+                                "series": [
+                                    # Short Strangle Core Legs
+                                    {
+                                        "series_id": 0, "symbol": t5_symbol, "option_type": "CE",
+                                        "strikes": str(short_ce), "expiry": m_expiry, "from_dt": entry_date,
+                                        "to_dt": m_expiry, "lot_size": t5_lot, "action": "Sell (Short)"
+                                    },
+                                    {
+                                        "series_id": 1, "symbol": t5_symbol, "option_type": "PE",
+                                        "strikes": str(short_pe), "expiry": m_expiry, "from_dt": entry_date,
+                                        "to_dt": m_expiry, "lot_size": t5_lot, "action": "Sell (Short)"
+                                    },
+                                    # Long Wing Protection Legs
+                                    {
+                                        "series_id": 2, "symbol": t5_symbol, "option_type": "CE",
+                                        "strikes": str(long_ce), "expiry": m_expiry, "from_dt": entry_date,
+                                        "to_dt": m_expiry, "lot_size": t5_lot, "action": "Buy (Long)"
+                                    },
+                                    {
+                                        "series_id": 3, "symbol": t5_symbol, "option_type": "PE",
+                                        "strikes": str(long_pe), "expiry": m_expiry, "from_dt": entry_date,
+                                        "to_dt": m_expiry, "lot_size": t5_lot, "action": "Buy (Long)"
+                                    }
+                                ]
+                            })
+
+                        if monthly_condor_tasks:
+                            st.session_state.batch_tasks = monthly_condor_tasks
+                            st.session_state.batch_next_task_id = len(monthly_condor_tasks)
+                            st.success(f"Successfully generated {len(monthly_condor_tasks)} monthly Iron Condor tasks using **{t5_entry_mode}** for {t5_symbol} ({int(t5_target_year)})!")
+                            st.rerun()
+                        else:
+                            st.warning("No monthly Iron Condor tasks could be built for the selected range.")
+
+            except Exception as e:
+                st.error(f"Failed to generate monthly Iron Condor schedule: {e}")
+
+
+    st.markdown("---")
+
     # --- GLOBAL MINIMIZE / MAXIMIZE ALL BUTTONS ---
     ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([2, 2, 6])
     with ctrl_col1:
@@ -67,7 +700,6 @@ if is_batch_mode:
     # --- RENDER DYNAMIC TASK CARDS ---
     for task_idx, task in enumerate(st.session_state.batch_tasks):
         
-        # Build concise summary label string (e.g. NIFTY 24000 CE (B) 21/06)
         summary_parts = []
         for s in task.get('series', []):
             action_code = "(B)" if "Buy" in s["action"] else "(S)"
@@ -75,9 +707,7 @@ if is_batch_mode:
             summary_parts.append(f"{s['symbol']} {s['strikes']} {s['option_type']} {action_code} {exp_str}")
         summary_label = " + ".join(summary_parts) if summary_parts else "Empty Task"
 
-        # Check if task is minimized
         if task.get("minimized", False):
-            # Render Minimized Square / Card View
             with st.container(border=True):
                 m_col1, m_col2, m_col3 = st.columns([7, 1.5, 1.5])
                 with m_col1:
@@ -92,7 +722,6 @@ if is_batch_mode:
                             st.session_state.batch_tasks.pop(task_idx)
                             st.rerun()
         else:
-            # Render Expanded Task Card
             with st.container(border=True):
                 t_col_h1, t_col_h2, t_col_h3, t_col_h4, t_col_h5 = st.columns([3.5, 1.5, 1.8, 1.6, 1.6])
                 with t_col_h1:
@@ -124,7 +753,6 @@ if is_batch_mode:
                             st.session_state.batch_tasks.pop(task_idx)
                             st.rerun()
 
-                # Render multiple series legs inside this task
                 if 'series' not in task:
                     task['series'] = [{
                         "series_id": 0,
@@ -307,7 +935,6 @@ if is_batch_mode:
                         "Status": "No Data Found ❌"
                     })
         
-        # Display Comparative Summary Table
         if table_rows:
             summary_df = pd.DataFrame(table_rows)
             st.dataframe(summary_df, use_container_width=True, hide_index=True)
@@ -583,8 +1210,8 @@ else:
                                         df['P&L (Points)'] = df['CLOSE'] - entry_price
                                     else:
                                         pnl_open = (entry_price - df['OPEN']) * config["lot_size"]
-                                        pnl_high = (entry_price - df['HIGH']) * config["lot_size"]
-                                        pnl_low = (entry_price - df['LOW']) * config["lot_size"]
+                                        pnl_high = (entry_price - df['LOW']) * config["lot_size"]
+                                        pnl_low = (entry_price - df['HIGH']) * config["lot_size"]
                                         pnl_close = (entry_price - df['CLOSE']) * config["lot_size"]
                                         df['P&L (Points)'] = entry_price - df['CLOSE']
                                         
@@ -924,8 +1551,8 @@ else:
                             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                             use_container_width=True
                         )
-                except Exception as e:
-                    st.info("💡 Word document export requires Chrome binaries which are disabled on Streamlit Cloud. You can safely use the CSV Data Ledger download!")
+                except ValueError as e:
+                    st.error("⚠️ To download Word docs, run `py -m pip install kaleido` in your terminal, and restart.")
                 
         else:
             st.error("Could not find data matches for any of the configured options. Check your dates.")
