@@ -4,3 +4,4 @@ plotly
 jugaad-data
 python-docx
 kaleido
+yfinance
