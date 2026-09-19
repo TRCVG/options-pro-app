@@ -9,7 +9,7 @@ import io
 import copy
 from docx import Document
 from docx.shared import Inches
-
+from google import genai
 
 # ==========================================
 # PAGE CONFIGURATION
@@ -49,12 +49,11 @@ if is_batch_mode:
             }]
         }]
         st.session_state.batch_next_task_id = 1
-
-   # ==========================================
+# ==========================================
     # TOOL 1: 🤖 AI Automated ATM Strangle / Straddle Generator (Manual Ref)
     # ==========================================
-    with st.expander("🛠️ Tool 1: AI Automated ATM Straddle Generator (Manual Ref)", expanded=True):
-        st.markdown("Generates base ATM or OTM Strangle/Straddle tasks with an offset range.")
+    with st.expander("🛠️ Tool 1: AI Automated ATM Straddle & Multi-Task Strangle Generator", expanded=True):
+        st.markdown("Generates multiple separate tasks stepping outward from ATM (e.g., Task #1: ATM, Task #2: +100/-100, Task #3: +200/-200).")
         
         ai_col1, ai_col2, ai_col3 = st.columns(3)
         with ai_col1:
@@ -64,79 +63,167 @@ if is_batch_mode:
             ai_from_dt = st.date_input("Entry Date", value=datetime.date.today() - datetime.timedelta(days=10), key="ai_from")
             ai_expiry_dt = st.date_input("Expiry Date", value=datetime.date.today(), key="ai_exp")
         with ai_col3:
-            ai_base_atm = st.number_input("Base ATM Strike Reference", value=24000, step=50, key="ai_atm")
-            # --- NEW: Max OTM Offset Range Option ---
-            ai_otm_offset = st.number_input("Max OTM Offset Range (Points)", value=0, step=50, min_value=0, key="ai_offset", help="Adds point offsets to create a Strangle (e.g., 100 or 200 points away from ATM)")
+            ai_base_atm = st.number_input("Base ATM Strike Reference", value=24600, step=50, key="ai_atm")
+            ai_otm_offset = st.number_input("Max OTM Offset Range (Points)", value=1000, step=50, min_value=0, key="ai_offset", help="Max distance from ATM (e.g., up to 1000 pts away)")
+            ai_range_step = st.number_input("Step Interval (Points)", value=100, step=50, min_value=50, key="ai_rstep", help="Distance difference per task level (e.g. 100 pts)")
 
-        if st.button("🚀 Auto-Build ATM/Strangle Task", type="primary"):
-            step_size = 100 if ai_symbol == "BANKNIFTY" else 50
-            ce_strike = int(ai_base_atm + ai_otm_offset)
-            pe_strike = int(ai_base_atm - ai_otm_offset)
+        if st.button("🚀 Auto-Build Multi-Task Strangles", type="primary"):
+            generated_tasks = []
+            task_id_counter = 0
             
-            # If offset is 0, it acts as a Straddle on the exact ATM strike. If offset > 0, it creates a Strangle.
-            series_list = []
+            # 1. Always create Task #1 for the exact ATM Straddle (Offset = 0)
+            atm_series = [
+                {
+                    "series_id": 0,
+                    "symbol": ai_symbol,
+                    "option_type": "CE",
+                    "strikes": str(int(ai_base_atm)),
+                    "expiry": ai_expiry_dt,
+                    "from_dt": ai_from_dt,
+                    "to_dt": ai_expiry_dt,
+                    "lot_size": ai_lot_size,
+                    "action": "Sell (Short)"
+                },
+                {
+                    "series_id": 1,
+                    "symbol": ai_symbol,
+                    "option_type": "PE",
+                    "strikes": str(int(ai_base_atm)),
+                    "expiry": ai_expiry_dt,
+                    "from_dt": ai_from_dt,
+                    "to_dt": ai_expiry_dt,
+                    "lot_size": ai_lot_size,
+                    "action": "Sell (Short)"
+                }
+            ]
             
-            if ai_otm_offset == 0:
-                series_list = [
-                    {
-                        "series_id": 0,
-                        "symbol": ai_symbol,
-                        "option_type": "CE",
-                        "strikes": str(ce_strike),
-                        "expiry": ai_expiry_dt,
-                        "from_dt": ai_from_dt,
-                        "to_dt": ai_expiry_dt,
-                        "lot_size": ai_lot_size,
-                        "action": "Sell (Short)"
-                    },
-                    {
-                        "series_id": 1,
-                        "symbol": ai_symbol,
-                        "option_type": "PE",
-                        "strikes": str(pe_strike),
-                        "expiry": ai_expiry_dt,
-                        "from_dt": ai_from_dt,
-                        "to_dt": ai_expiry_dt,
-                        "lot_size": ai_lot_size,
-                        "action": "Sell (Short)"
-                    }
-                ]
-            else:
-                # OTM Strangle with offset range
-                series_list = [
-                    {
-                        "series_id": 0,
-                        "symbol": ai_symbol,
-                        "option_type": "CE",
-                        "strikes": str(ce_strike),
-                        "expiry": ai_expiry_dt,
-                        "from_dt": ai_from_dt,
-                        "to_dt": ai_expiry_dt,
-                        "lot_size": ai_lot_size,
-                        "action": "Sell (Short)"
-                    },
-                    {
-                        "series_id": 1,
-                        "symbol": ai_symbol,
-                        "option_type": "PE",
-                        "strikes": str(pe_strike),
-                        "expiry": ai_expiry_dt,
-                        "from_dt": ai_from_dt,
-                        "to_dt": ai_expiry_dt,
-                        "lot_size": ai_lot_size,
-                        "action": "Sell (Short)"
-                    }
-                ]
-
-            new_tasks = [{
-                "id": 0,
+            generated_tasks.append({
+                "id": task_id_counter,
                 "minimized": True,
-                "series": series_list
-            }]
+                "series": atm_series
+            })
+            task_id_counter += 1
             
-            st.session_state.batch_tasks = new_tasks
-            st.session_state.batch_next_task_id = len(new_tasks)
-            st.success("Successfully auto-generated task via Tool 1 with OTM offset range!")
+            # 2. Loop and create subsequent tasks for each step offset (Task #2, #3, etc.)
+            current_offset = int(ai_range_step)
+            max_offset = int(ai_otm_offset)
+            
+            while current_offset <= max_offset:
+                ce_strike = int(ai_base_atm + current_offset)
+                pe_strike = int(ai_base_atm - current_offset)
+                
+                strangle_series = [
+                    {
+                        "series_id": 0,
+                        "symbol": ai_symbol,
+                        "option_type": "CE",
+                        "strikes": str(ce_strike),
+                        "expiry": ai_expiry_dt,
+                        "from_dt": ai_from_dt,
+                        "to_dt": ai_expiry_dt,
+                        "lot_size": ai_lot_size,
+                        "action": "Sell (Short)"
+                    },
+                    {
+                        "series_id": 1,
+                        "symbol": ai_symbol,
+                        "option_type": "PE",
+                        "strikes": str(pe_strike),
+                        "expiry": ai_expiry_dt,
+                        "from_dt": ai_from_dt,
+                        "to_dt": ai_expiry_dt,
+                        "lot_size": ai_lot_size,
+                        "action": "Sell (Short)"
+                    }
+                ]
+                
+                generated_tasks.append({
+                    "id": task_id_counter,
+                    "minimized": True,
+                    "series": strangle_series
+                })
+                task_id_counter += 1
+                current_offset += int(ai_range_step)
+
+            # Assign all generated tasks to your session state batch queue
+            st.session_state.batch_tasks = generated_tasks
+            st.session_state.batch_next_task_id = len(generated_tasks)
+            st.success(f"Successfully generated {len(generated_tasks)} separate tasks (ATM + Strangles up to {ai_otm_offset} pts offset)!")
+            st.rerun()
+
+    # ==========================================
+    # TOOL 1A: 🤖 AI Automated Parallel Shift Generator (Lowest to Highest Order)
+    # ==========================================
+    with st.expander("🛠️ Tool 1A: AI Automated Parallel Shift Generator (Symmetric Strikes)", expanded=False):
+        st.markdown("Generates tasks where both CE and PE move together in parallel steps from lowest strike to highest strike.")
+        
+        t2_col1, t2_col2, t2_col3 = st.columns(3)
+        with t2_col1:
+            t2_symbol = st.selectbox("Index Symbol", ["NIFTY", "BANKNIFTY", "FINNIFTY"], key="t2_sym")
+            t2_lot_size = st.number_input("Lot Size", value=1, min_value=1, key="t2_lot")
+        with t2_col2:
+            t2_from_dt = st.date_input("Entry Date", value=datetime.date.today() - datetime.timedelta(days=10), key="t2_from")
+            t2_expiry_dt = st.date_input("Expiry Date", value=datetime.date.today(), key="t2_exp")
+        with t2_col3:
+            t2_base_atm = st.number_input("Base ATM Strike Reference", value=24600, step=50, key="t2_atm")
+            t2_max_offset = st.number_input("Max Shift Range (Points)", value=1000, step=50, min_value=0, key="t2_offset", help="Max distance to shift upward and downward")
+            t2_step = st.number_input("Step Interval (Points)", value=100, step=50, min_value=50, key="t2_rstep", help="Distance difference per task level (e.g. 100 pts)")
+
+        if st.button("🚀 Auto-Build Parallel Shift Tasks (Tool 1A)", type="primary"):
+            generated_tasks = []
+            task_id_counter = 0
+            
+            # Build list of offsets in ascending order (from -max_offset up to +max_offset)
+            # e.g., -1000, -900, ... 0, ... +900, +1000
+            offsets = []
+            current = -int(t2_max_offset)
+            step_val = int(t2_step)
+            
+            while current <= int(t2_max_offset):
+                offsets.append(current)
+                current += step_val
+                
+            # If 0 is missing due to step intervals, ensure it's included logically if needed, 
+            # but standard looping handles it if max/step align. Let's build tasks sequentially:
+            
+            for offset in offsets:
+                strike_val = int(t2_base_atm + offset)
+                
+                task_series = [
+                    {
+                        "series_id": 0,
+                        "symbol": t2_symbol,
+                        "option_type": "CE",
+                        "strikes": str(strike_val),
+                        "expiry": t2_expiry_dt,
+                        "from_dt": t2_from_dt,
+                        "to_dt": t2_expiry_dt,
+                        "lot_size": t2_lot_size,
+                        "action": "Sell (Short)"
+                    },
+                    {
+                        "series_id": 1,
+                        "symbol": t2_symbol,
+                        "option_type": "PE",
+                        "strikes": str(strike_val),
+                        "expiry": t2_expiry_dt,
+                        "from_dt": t2_from_dt,
+                        "to_dt": t2_expiry_dt,
+                        "lot_size": t2_lot_size,
+                        "action": "Sell (Short)"
+                    }
+                ]
+                
+                generated_tasks.append({
+                    "id": task_id_counter,
+                    "minimized": True,
+                    "series": task_series
+                })
+                task_id_counter += 1
+
+            st.session_state.batch_tasks = generated_tasks
+            st.session_state.batch_next_task_id = len(generated_tasks)
+            st.success(f"Successfully generated {len(generated_tasks)} tasks from lowest to highest via Tool 1A!")
             st.rerun()
   # ==========================================
     # TOOL 2: 🛠️ Yearly Monthly ATM Planner (Flexible Entry Modes)
